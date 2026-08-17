@@ -989,14 +989,40 @@ if (isset($_GET['action'])) {
       }).catch(err => console.error('Failed to save scores to server:', err));
     }
 
-    // Single-key save: used when a judge types one score, so we only push
-    // the one changed value to the server instead of the whole object.
+    // Automatic single-score save.
+    // Every change in a score input is saved to pageant_scores_store.json
+    // immediately through the PHP save_score endpoint.
+    // A per-score request queue is used so fast typing (for example 2 -> 20)
+    // cannot cause an older request to overwrite the latest value.
+    const scoreSaveQueues = {};
+
     function pushSingleScoreToServer(key, value) {
-      fetch('?action=save_score', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key, value: value === undefined ? null : value })
-      }).catch(err => console.error('Failed to save score to server:', err));
+      const payload = {
+        key,
+        value: value === undefined ? null : value
+      };
+
+      const previous = scoreSaveQueues[key] || Promise.resolve();
+
+      scoreSaveQueues[key] = previous
+        .catch(() => {})
+        .then(() => fetch('?action=save_score', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          cache: 'no-store'
+        }))
+        .then(async response => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          return response.json();
+        })
+        .catch(err => {
+          console.error('Failed to save score to server:', err);
+        });
+
+      return scoreSaveQueues[key];
     }
 
     async function resetScoresOnServer() {
